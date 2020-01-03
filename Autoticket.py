@@ -11,6 +11,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.keys import Keys
 
 
 class Concert(object):
@@ -22,7 +23,6 @@ class Concert(object):
         self.status = 0  # 状态标记
         self.time_start = 0  # 开始时间
         self.time_end = 0  # 结束时间
-        self.num = 0  # 尝试次数
         self.type = 0  # 目标购票网址类别
         self.ticket_num = ticket_num  # 购买票数
         self.nick_name = nick_name  # 用户昵称
@@ -34,6 +34,7 @@ class Concert(object):
         self.intersect_wait_time = 0.5 # 间隔等待时间，防止速度过快导致问题
         self.start_time = datetime.datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
         self.start_time_ts = datetime.datetime.timestamp(self.start_time)
+        self.ping_lantency = 0.03 # ping得到的延迟(s)
 
         if self.target_url.find("detail.damai.cn") != -1:
             self.type = 1
@@ -99,10 +100,10 @@ class Concert(object):
             self.driver.quit()
         print('###打开浏览器，进入大麦网###')
         if self.browser == 0: # 选择了Chrome浏览器，并成功加载cookie，设置不载入图片，提高刷新效率
-            options = webdriver.ChromeOptions()
+            # options = webdriver.ChromeOptions()
             # prefs = {"profile.managed_default_content_settings.images":2}
             # options.add_experimental_option("prefs",prefs)
-            self.driver = webdriver.Chrome(options=options, executable_path='./chromedriver')
+            self.driver = webdriver.Chrome(executable_path='./chromedriver')
         elif self.browser == 1: # 选择了火狐浏览器
             options = webdriver.FirefoxProfile()
             options.set_preference('permissions.default.image', 2)  
@@ -132,123 +133,147 @@ class Concert(object):
             self.driver.quit()
             raise Exception("***错误：登录失败,请检查配置文件昵称或删除cookie.pkl后重试***")
 
-    def check_confirm_page(self):
-        while self.driver.title.find('确认订单') == -1:
-            time.sleep(0.02)
-            return
+    def open_tab(self):
+        url = self.driver.current_url
+        for i in range(6):
+            self.driver.execute_script("window.open('{}');".format(url))
+            time.sleep(0.1)
+
+    def buy(self):
+        self.open_tab()
+        deadline = self.start_time_ts + self.ping_lantency
+        while True:
+            # todo 优化判断逻辑
+            if self.start_time_ts - time.time() >= 30:
+                print("等待中, 离开始抢票还有{:.1f}秒".format(self.start_time_ts - time.time()))
+                time.sleep(5)
+                continue
+            elif 2 <= self.start_time_ts - time.time() < 10:
+                print("等待中, 离开始抢票还有{:.1f}秒".format(self.start_time_ts - time.time()))
+                time.sleep(1)
+                continue
+            elif 3*self.ping_lantency < self.start_time_ts - time.time() < 2:
+                time.sleep(self.ping_lantency)
+                continue
+            elif self.ping_lantency < self.start_time_ts - time.time() < 3*self.ping_lantency:
+                time.sleep(0.01)
+                continue
+            else:
+                # 超过开始抢票时间60s就退出
+                if time.time() - self.start_time_ts > 60:
+                    break
+
+                # 开始抢票
+                # 首先将所有的tab刷新一遍
+                for window in self.driver.window_handles:
+                    self.driver.switch_to.window(window)
+                    self.driver.refresh()
+                    time.sleep(0.01)
+                
+                # 判断是否有tab已经能购买了
+                # todo 优化判断逻辑
+                for window in self.driver.window_handles:
+                    success = self.choose_ticket_1()
+                    if success:
+                        break
+                    else:
+                        self.driver.refresh()
             
     def choose_ticket_1(self):  # for type 1, i.e., detail.damai.cn
         self.time_start = time.time()
-        print("###开始进行日期及票价选择###")
-
-        while self.driver.title.find('确认订单') == -1:  # 如果跳转到了确认界面就算这步成功了，否则继续执行此步
-            self.num += 1 # 记录抢票轮数
-            if self.status == 1:
-                if self.date != 0: # 如果需要选择日期
-                    calendar = WebDriverWait(self.driver, self.total_wait_time, self.refresh_wait_time).until(
-                        EC.presence_of_element_located((By.CLASS_NAME, "functional-calendar")))
-                    datelist = calendar.find_elements_by_css_selector("[class='wh_content_item']") # 找到能选择的日期
-                    datelist = datelist[7:] # 跳过前面7个表示周一~周日的元素
-                    datelist[self.date - 1].click() # 选择对应日期
-                
-                selects = self.driver.find_elements_by_class_name('perform__order__select')
-                # print('可选区域数量为：{}'.format(len(selects)))
-                for item in selects:
-                    if item.find_element_by_class_name('select_left').text == '场次':
-                        session = item
-                        # print('\t场次定位成功')
-                    elif item.find_element_by_class_name('select_left').text == '票档':
-                        price = item
-                        # print('\t票档定位成功')
-
-                session_list = session.find_elements_by_class_name('select_right_list_item')
-                print('可选场次数量为：{}'.format(len(session_list)))
-                if len(self.session) == 1:
-                    j = session_list[self.session[0] - 1].click()
-                else:
-                    for i in self.session:  # 根据优先级选择一个可行场次
-                        j = session_list[i - 1]
-                        k = self.isClassPresent(j, 'presell', True)
-                        if k:  # 如果找到了带presell的类
-                            if k.text == '无票':
-                                continue
-                            elif k.text == '预售':
-                                j.click()
-                                break
-                        else:
-                            j.click()
-                            break
-
-                price_list = price.find_elements_by_class_name('select_right_list_item')
-                print('可选票档数量为：{}'.format(len(price_list)))
-                if len(self.price) == 1:
-                    j = price_list[self.price[0] - 1].click()
-                else:
-                    for i in self.price:
-                        j = price_list[i - 1]
-                        k = self.isClassPresent(j, 'notticket')
-                        if k:  # 存在notticket代表存在缺货登记，跳过
-                            continue
-                        else:
-                            j.click()
-                            break
-
-                buybutton = self.driver.find_element_by_class_name('buybtn')
-                buybutton_text = buybutton.text
-            # print(buybutton_text)
+        # while self.driver.title.find('确认订单') == -1:  # 如果跳转到了确认界面就算这步成功了，否则继续执行此步
+        if self.status == 1:
+            print("###开始进行日期及票价选择###")
+            if self.date != 0: # 如果需要选择日期
+                calendar = WebDriverWait(self.driver, self.total_wait_time, self.refresh_wait_time).until(
+                    EC.presence_of_element_located((By.CLASS_NAME, "functional-calendar")))
+                datelist = calendar.find_elements_by_css_selector("[class='wh_content_item']") # 找到能选择的日期
+                datelist = datelist[7:] # 跳过前面7个表示周一~周日的元素
+                datelist[self.date - 1].click() # 选择对应日期
             
-            def add_ticket(): # 设置增加票数
-                try:
-                    for i in range(self.ticket_num - 1):  
-                        addbtn = WebDriverWait(self.driver, self.total_wait_time, self.refresh_wait_time).until(
-                            EC.presence_of_element_located((By.XPATH, "//div[@class='cafe-c-input-number']/a[2]")))
-                        addbtn.click()
-                except:
-                    raise Exception("***错误：票数增加失败***")
+            selects = self.driver.find_elements_by_class_name('perform__order__select')
+            # print('可选区域数量为：{}'.format(len(selects)))
+            for item in selects:
+                if item.find_element_by_class_name('select_left').text == '场次':
+                    session = item
+                    # print('\t场次定位成功')
+                elif item.find_element_by_class_name('select_left').text == '票档':
+                    price = item
+                    # print('\t票档定位成功')
 
-            if buybutton_text == "即将开抢" or buybutton_text == "即将开售":
-                current_ts = time.time()
-                
-                while True:
-                    print("shuaxin")
-                    if self.start_time_ts - current_ts >= 10:
-                        time.sleep(5)
-                    elif 5 <= self.start_time_ts - current_ts < 10:
-                        time.sleep(1)
+            session_list = session.find_elements_by_class_name('select_right_list_item')
+            print('可选场次数量为：{}'.format(len(session_list)))
+            if len(self.session) == 1:
+                j = session_list[self.session[0] - 1].click()
+            else:
+                for i in self.session:  # 根据优先级选择一个可行场次
+                    j = session_list[i - 1]
+                    k = self.isClassPresent(j, 'presell', True)
+                    if k:  # 如果找到了带presell的类
+                        if k.text == '无票':
+                            continue
+                        elif k.text == '预售':
+                            j.click()
+                            break
                     else:
+                        j.click()
                         break
-                while True:
-                    if self.start_time_ts - current_ts < 0.02:
-                        break
+
+            price_list = price.find_elements_by_class_name('select_right_list_item')
+            print('可选票档数量为：{}'.format(len(price_list)))
+            if len(self.price) == 1:
+                j = price_list[self.price[0] - 1].click()
+            else:
+                for i in self.price:
+                    j = price_list[i - 1]
+                    k = self.isClassPresent(j, 'notticket')
+                    if k:  # 存在notticket代表存在缺货登记，跳过
+                        continue
                     else:
-                        time.sleep(0.02)
-                self.status = 2
-                self.driver.refresh()
-                print('---尚未开售，刷新等待---')
-                continue
+                        j.click()
+                        break
 
-            elif buybutton_text == "立即预订":
-                add_ticket()
-                buybutton.click()
-                self.status = 3
+            buybutton = self.driver.find_element_by_class_name('buybtn')
+            buybutton_text = buybutton.text
+        # print(buybutton_text)
+        
+        def add_ticket(): # 设置增加票数
+            try:
+                for i in range(self.ticket_num - 1):  
+                    addbtn = WebDriverWait(self.driver, self.total_wait_time, self.refresh_wait_time).until(
+                        EC.presence_of_element_located((By.XPATH, "//div[@class='cafe-c-input-number']/a[2]")))
+                    addbtn.click()
+            except:
+                raise Exception("***错误：票数增加失败***")
 
-            elif buybutton_text == "立即购买":
-                add_ticket()
-                buybutton.click()
-                self.status = 4
+        if buybutton_text == "即将开抢" or buybutton_text == "即将开售":
+            self.status = 2
+            self.driver.refresh()
+            print('---尚未开售，刷新等待---')
+            return
 
-            elif buybutton_text == "选座购买":  # 选座购买暂时无法完成自动化
-                buybutton.click()
-                self.status = 5
-                # 自行选座，检测是否已选好
-                print("###请自行选择位置和票价###")
-                WebDriverWait(self.driver, 10, self.refresh_wait_time).until(
-                EC.visibility_of_element_located((By.CLASS_NAME, "selected-list")))
-                select_button = self.driver.find_element_by_xpath('//*[@id="app"]/div[2]/div[2]/div[2]/button')
-                select_button.click()
-            elif buybutton_text == "提交缺货登记":
-                print('###抢票失败，请手动提交缺货登记###')
-                break
+        elif buybutton_text == "立即预订":
+            add_ticket()
+            buybutton.click()
+            self.status = 3
+
+        elif buybutton_text == "立即购买":
+            add_ticket()
+            buybutton.click()
+            self.status = 4
+
+        elif buybutton_text == "选座购买":  # 选座购买暂时无法完成自动化
+            buybutton.click()
+            self.status = 5
+            # 自行选座，检测是否已选好
+            print("###请自行选择位置和票价###")
+            WebDriverWait(self.driver, 10, self.refresh_wait_time).until(
+            EC.visibility_of_element_located((By.CLASS_NAME, "selected-list")))
+            select_button = self.driver.find_element_by_xpath('//*[@id="app"]/div[2]/div[2]/div[2]/button')
+            select_button.click()
+        elif buybutton_text == "提交缺货登记":
+            print('###抢票失败，请手动提交缺货登记###')
+            
 
                 
     def choose_ticket_2(self):  # for type 2, i.e., piao.damai.cn
@@ -256,7 +281,7 @@ class Concert(object):
         print("###开始进行日期及票价选择###")
 
         while self.driver.title.find('订单结算页') == -1:  # 如果跳转到了确认界面就算这步成功了，否则继续执行此步
-            self.num += 1 # 记录抢票轮数
+            
             if self.date != 0: # 如果要选择日期
                 datepicker = WebDriverWait(self.driver, self.total_wait_time, self.refresh_wait_time).until(
                     EC.presence_of_element_located(
@@ -420,7 +445,7 @@ class Concert(object):
 
     def finish(self):
         if self.status == 6:  # 说明抢票成功
-            print("###经过%d轮奋斗，共耗时%f秒，抢票成功！请确认订单信息###" % (self.num, round(self.time_end - self.time_start, 3)))
+            print("###共耗时%f秒，抢票成功！请确认订单信息###" % (round(self.time_end - self.time_start, 3)))
         else:
             self.driver.quit()
 
@@ -447,8 +472,9 @@ if __name__ == '__main__':
     if True:
         try:
             if con.type == 1:  # detail.damai.cn
-                con.choose_ticket_1()
-                con.check_order_1()
+                con.buy()
+                # con.choose_ticket_1()
+                # con.check_order_1()
             elif con.type == 2:  # piao.damai.cn
                 con.choose_ticket_2()
                 con.check_order_2()
