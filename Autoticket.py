@@ -142,6 +142,7 @@ class Concert(object):
     def buy(self):
         self.open_tab()
         deadline = self.start_time_ts + self.ping_lantency
+        go_to_check = False
         while True:
             # todo 优化判断逻辑
             if self.start_time_ts - time.time() >= 30:
@@ -165,20 +166,26 @@ class Concert(object):
 
                 # 开始抢票
                 # 首先将所有的tab刷新一遍
+                sleep_delay = 0  # ms
                 for window in self.driver.window_handles:
                     self.driver.switch_to.window(window)
-                    self.driver.refresh()
-                    time.sleep(0.01)
+                    self.driver.execute_script("setTimeout(location.reload.bind(location), {});".format(sleep_delay))
+                    sleep_delay += 10
                 
                 # 判断是否有tab已经能购买了
                 # todo 优化判断逻辑
                 for window in self.driver.window_handles:
+                    self.driver.switch_to.window(window)
                     success = self.choose_ticket_1()
                     if success:
+                        go_to_check = True
                         break
                     else:
                         self.driver.refresh()
-            
+            if go_to_check:
+                break
+        self.check_order_1()
+
     def choose_ticket_1(self):  # for type 1, i.e., detail.damai.cn
         self.time_start = time.time()
         # while self.driver.title.find('确认订单') == -1:  # 如果跳转到了确认界面就算这步成功了，否则继续执行此步
@@ -247,20 +254,21 @@ class Concert(object):
                 raise Exception("***错误：票数增加失败***")
 
         if buybutton_text == "即将开抢" or buybutton_text == "即将开售":
-            self.status = 2
-            self.driver.refresh()
+            self.status = 1
             print('---尚未开售，刷新等待---')
-            return
+            return False
 
         elif buybutton_text == "立即预订":
             add_ticket()
             buybutton.click()
             self.status = 3
+            return True
 
         elif buybutton_text == "立即购买":
             add_ticket()
             buybutton.click()
             self.status = 4
+            return True
 
         elif buybutton_text == "选座购买":  # 选座购买暂时无法完成自动化
             buybutton.click()
@@ -271,9 +279,10 @@ class Concert(object):
             EC.visibility_of_element_located((By.CLASS_NAME, "selected-list")))
             select_button = self.driver.find_element_by_xpath('//*[@id="app"]/div[2]/div[2]/div[2]/button')
             select_button.click()
+            return True
         elif buybutton_text == "提交缺货登记":
             print('###抢票失败，请手动提交缺货登记###')
-            
+            return True
 
                 
     def choose_ticket_2(self):  # for type 2, i.e., piao.damai.cn
@@ -370,7 +379,7 @@ class Concert(object):
     def check_order_1(self):
         if self.status in [3, 4, 5]:
             print('###开始确认订单###')
-            button_xpath = " //*[@id=\"confirmOrder_1\"]/div[%d]/button" # 同意以上协议并提交订单Xpath
+            button_xpath = '//*[@id="confirmOrder_1"]/div[%d]/button' # 同意以上协议并提交订单Xpath
             button_replace = 8 # 当实名者信息不空时为9，空时为8
             if self.real_name: # 实名者信息不为空
                 button_replace = 9
@@ -386,6 +395,7 @@ class Concert(object):
             submitbtn = WebDriverWait(self.driver, self.total_wait_time, self.refresh_wait_time).until(
                     EC.presence_of_element_located(
                         (By.XPATH, button_xpath%button_replace))) # 同意以上协议并提交订单
+            # todo 这里要加重试
             submitbtn.click()  
             '''# 以下的方法更通用，但是更慢
             try:
@@ -396,7 +406,7 @@ class Concert(object):
                         break
             except Exception as e:
                 raise Exception('***错误：没有找到提交订单按钮***')
-           '''
+            '''
             try:
                 WebDriverWait(self.driver, self.total_wait_time, self.refresh_wait_time).until(
                     EC.title_contains('支付宝'))
