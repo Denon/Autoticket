@@ -12,6 +12,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
+from selenium.common.exceptions import TimeoutException
 
 
 class Concert(object):
@@ -34,7 +35,7 @@ class Concert(object):
         self.intersect_wait_time = 0.5 # 间隔等待时间，防止速度过快导致问题
         self.start_time = datetime.datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
         self.start_time_ts = datetime.datetime.timestamp(self.start_time)
-        self.ping_lantency = 0.03 # ping得到的延迟(s)
+        self.ping_lantency = 0.02 # ping得到的延迟(s)
 
         if self.target_url.find("detail.damai.cn") != -1:
             self.type = 1
@@ -172,19 +173,34 @@ class Concert(object):
                     self.driver.execute_script("setTimeout(location.reload.bind(location), {});".format(sleep_delay))
                     sleep_delay += 10
                 
-                # 判断是否有tab已经能购买了
-                # todo 优化判断逻辑
-                for window in self.driver.window_handles:
-                    self.driver.switch_to.window(window)
-                    success = self.choose_ticket_1()
-                    if success:
-                        go_to_check = True
+                # 循环判断是否有tab已经能购买了
+                # 优化嵌套循环的判断
+                all_windows = [window for window in self.driver.window_handles]
+                while True:
+                    for window in enumerate(all_windows):
+                        self.driver.switch_to.window(window)
+                        if not self.check_page_load():
+                            continue
+                        success = self.choose_ticket_1()
+                        if success:
+                            go_to_check = True
+                            break
+                        else:
+                            self.driver.refresh()
+                    if go_to_check:
                         break
-                    else:
-                        self.driver.refresh()
             if go_to_check:
                 break
         self.check_order_1()
+
+    def check_page_load(self):
+        try:
+            WebDriverWait(self.driver, 0.01).until(
+                        EC.presence_of_element_located((By.CLASS_NAME, "functional-calendar")))
+        except TimeoutException as e:
+            return False
+        else:
+            return True
 
     def choose_ticket_1(self):  # for type 1, i.e., detail.damai.cn
         self.time_start = time.time()
@@ -392,11 +408,6 @@ class Concert(object):
                 except Exception as e:
                     print(e)
                     raise Exception("***错误：实名信息框未显示，请检查网络或配置文件***")
-            submitbtn = WebDriverWait(self.driver, self.total_wait_time, self.refresh_wait_time).until(
-                    EC.presence_of_element_located(
-                        (By.XPATH, button_xpath%button_replace))) # 同意以上协议并提交订单
-            # todo 这里要加重试
-            submitbtn.click()  
             '''# 以下的方法更通用，但是更慢
             try:
                 buttons = self.driver.find_elements_by_tag_name('button') # 找出所有该页面的button
@@ -407,15 +418,20 @@ class Concert(object):
             except Exception as e:
                 raise Exception('***错误：没有找到提交订单按钮***')
             '''
-            try:
-                WebDriverWait(self.driver, self.total_wait_time, self.refresh_wait_time).until(
-                    EC.title_contains('支付宝'))
-                self.status = 6
-                print('###成功提交订单,请手动支付###')
-                self.time_end = time.time()
-            except Exception as e:
-                print('---提交订单失败,请查看问题---')
-                print(e)
+            for i in range(20):
+                submitbtn = WebDriverWait(self.driver, self.total_wait_time, self.refresh_wait_time).until(
+                    EC.presence_of_element_located(
+                        (By.XPATH, button_xpath%button_replace))) # 同意以上协议并提交订单 
+                submitbtn.click()
+                try:
+                    WebDriverWait(self.driver, self.total_wait_time, self.refresh_wait_time).until(
+                        EC.title_contains('支付宝'))
+                    self.status = 6
+                    print('###成功提交订单,请手动支付###')
+                    self.time_end = time.time()
+                except Exception as e:
+                    print('---提交订单失败,请查看问题---')
+                    print(e)
 
                 
     def check_order_2(self):
@@ -457,7 +473,8 @@ class Concert(object):
         if self.status == 6:  # 说明抢票成功
             print("###共耗时%f秒，抢票成功！请确认订单信息###" % (round(self.time_end - self.time_start, 3)))
         else:
-            self.driver.quit()
+            pass
+            # self.driver.quit()
 
 
 if __name__ == '__main__':
