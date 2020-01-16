@@ -175,29 +175,30 @@ class Concert(object):
                 
                 # 循环判断是否有tab已经能购买了
                 # 优化嵌套循环的判断
-                all_windows = [window for window in self.driver.window_handles]
+                
                 while True:
-                    for window in enumerate(all_windows):
+                    for window in self.driver.window_handles:
                         self.driver.switch_to.window(window)
                         if not self.check_page_load():
                             continue
                         success = self.choose_ticket_1()
                         if success:
-                            go_to_check = True
-                            break
+                            go_to_check = self.check_order_1()
+                            if go_to_check:
+                                break
                         else:
                             self.driver.refresh()
                     if go_to_check:
                         break
             if go_to_check:
                 break
-        self.check_order_1()
 
     def check_page_load(self):
         try:
-            WebDriverWait(self.driver, 0.01).until(
+            WebDriverWait(self.driver, 0.01, 0.01).until(
                         EC.presence_of_element_located((By.CLASS_NAME, "functional-calendar")))
         except TimeoutException as e:
+            print("未加载完成")
             return False
         else:
             return True
@@ -418,20 +419,33 @@ class Concert(object):
             except Exception as e:
                 raise Exception('***错误：没有找到提交订单按钮***')
             '''
-            for i in range(20):
-                submitbtn = WebDriverWait(self.driver, self.total_wait_time, self.refresh_wait_time).until(
+            
+            submitbtn = WebDriverWait(self.driver, self.total_wait_time, self.refresh_wait_time).until(
+                EC.presence_of_element_located(
+                    (By.XPATH, button_xpath%button_replace))) # 同意以上协议并提交订单 
+            submitbtn.click()
+            # 同一时间下单人数多
+            try:
+                fuck_confirm_btn = WebDriverWait(self.driver, 0.02, 0.01).until(
                     EC.presence_of_element_located(
-                        (By.XPATH, button_xpath%button_replace))) # 同意以上协议并提交订单 
-                submitbtn.click()
-                try:
-                    WebDriverWait(self.driver, self.total_wait_time, self.refresh_wait_time).until(
-                        EC.title_contains('支付宝'))
-                    self.status = 6
-                    print('###成功提交订单,请手动支付###')
-                    self.time_end = time.time()
-                except Exception as e:
-                    print('---提交订单失败,请查看问题---')
-                    print(e)
+                        (By.XPATH, '//*[@id="dialog-footer-2"]/button')))
+            except TimeoutException as e:
+                pass
+            else:
+                fuck_confirm_btn.click()
+                return False
+            
+            try:
+                WebDriverWait(self.driver, self.total_wait_time, self.refresh_wait_time).until(
+                    EC.title_contains('支付宝'))
+                self.status = 6
+                print('###成功提交订单,请手动支付###')
+                self.time_end = time.time()
+                return True
+            except Exception as e:
+                print('---提交订单失败,请查看问题---')
+                print(e)
+                return False
 
                 
     def check_order_2(self):
@@ -473,7 +487,7 @@ class Concert(object):
         if self.status == 6:  # 说明抢票成功
             print("###共耗时%f秒，抢票成功！请确认订单信息###" % (round(self.time_end - self.time_start, 3)))
         else:
-            pass
+            print("ok")
             # self.driver.quit()
 
 
