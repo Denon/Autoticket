@@ -13,6 +13,7 @@ from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
 from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.common.action_chains import ActionChains
 
 
 class Concert(object):
@@ -35,7 +36,7 @@ class Concert(object):
         self.intersect_wait_time = 0.5 # 间隔等待时间，防止速度过快导致问题
         self.start_time = datetime.datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
         self.start_time_ts = datetime.datetime.timestamp(self.start_time)
-        self.ping_lantency = 0.02 # ping得到的延迟(s)
+        self.ping_lantency = 0.05 # ping得到的延迟(s)
 
         if self.target_url.find("detail.damai.cn") != -1:
             self.type = 1
@@ -101,10 +102,11 @@ class Concert(object):
             self.driver.quit()
         print('###打开浏览器，进入大麦网###')
         if self.browser == 0: # 选择了Chrome浏览器，并成功加载cookie，设置不载入图片，提高刷新效率
-            # options = webdriver.ChromeOptions()
-            # prefs = {"profile.managed_default_content_settings.images":2}
-            # options.add_experimental_option("prefs",prefs)
-            self.driver = webdriver.Chrome(executable_path='./chromedriver')
+            options = webdriver.ChromeOptions()
+            prefs = {"profile.managed_default_content_settings.images":2}
+            options.add_experimental_option("prefs",prefs)
+            # options.add_argument('--headless')
+            self.driver = webdriver.Chrome(executable_path='./chromedriver', chrome_options=options)
         elif self.browser == 1: # 选择了火狐浏览器
             options = webdriver.FirefoxProfile()
             options.set_preference('permissions.default.image', 2)  
@@ -115,6 +117,7 @@ class Concert(object):
         self.set_cookie()
         # self.driver.maximize_window()
         self.driver.refresh()
+        # self.driver.implicitly_wait(1)
         
         
     def enter_concert(self):
@@ -136,35 +139,38 @@ class Concert(object):
 
     def open_tab(self):
         url = self.driver.current_url
-        for i in range(6):
+        for i in range(5):
             self.driver.execute_script("window.open('{}');".format(url))
-            time.sleep(0.1)
+            time.sleep(0.01)
 
     def buy(self):
         self.open_tab()
-        deadline = self.start_time_ts + self.ping_lantency
+        # 要先遍历一遍所有window，不然后面执行script会很慢
+        for window in self.driver.window_handles:
+            self.driver.switch_to.window(window)
+            self.driver.refresh()
         go_to_check = False
         while True:
+            time_delta = self.start_time_ts - time.time()
             # todo 优化判断逻辑
-            if self.start_time_ts - time.time() >= 30:
-                print("等待中, 离开始抢票还有{:.1f}秒".format(self.start_time_ts - time.time()))
+            if self.start_time_ts - time.time() >= 10:
+                print("等待中, 离开始抢票还有{:.1f}秒".format(time_delta))
                 time.sleep(5)
                 continue
             elif 2 <= self.start_time_ts - time.time() < 10:
-                print("等待中, 离开始抢票还有{:.1f}秒".format(self.start_time_ts - time.time()))
+                print("等待中, 离开始抢票还有{:.1f}秒".format(time_delta))
                 time.sleep(1)
                 continue
-            elif 3*self.ping_lantency < self.start_time_ts - time.time() < 2:
+            elif 3*self.ping_lantency < time_delta < 2:
                 time.sleep(self.ping_lantency)
                 continue
-            elif self.ping_lantency < self.start_time_ts - time.time() < 3*self.ping_lantency:
+            elif self.ping_lantency < time_delta <= 3*self.ping_lantency:
                 time.sleep(0.01)
                 continue
             else:
-                # 超过开始抢票时间60s就退出
-                if time.time() - self.start_time_ts > 60:
-                    break
-
+                
+                print("开始抢票")
+                print(time.time())
                 # 开始抢票
                 # 首先将所有的tab刷新一遍
                 sleep_delay = 0  # ms
@@ -172,31 +178,69 @@ class Concert(object):
                     self.driver.switch_to.window(window)
                     self.driver.execute_script("setTimeout(location.reload.bind(location), {});".format(sleep_delay))
                     sleep_delay += 10
+                    time.sleep(0.01)
                 
                 # 循环判断是否有tab已经能购买了
-                # 优化嵌套循环的判断
+                # todo 优化嵌套循环的判断
                 
                 while True:
                     for window in self.driver.window_handles:
                         self.driver.switch_to.window(window)
-                        if not self.check_page_load():
+                        if not self.check_select_page_load():
+                            print("跳过")
                             continue
                         success = self.choose_ticket_1()
                         if success:
-                            go_to_check = self.check_order_1()
-                            if go_to_check:
-                                break
+                            go_to_check = True
+                            break
                         else:
                             self.driver.refresh()
                     if go_to_check:
                         break
-            if go_to_check:
-                break
+                if go_to_check:
+                    break
 
-    def check_page_load(self):
+        check_result = self.check_order_1()
+        if check_result:
+            return
+        
+        order_url = self.driver.current_url
+        for window in self.driver.window_handles:
+            self.driver.switch_to.window(window)
+            self.driver.get(order_url)
+            
+        while True:
+            for i in range(100):
+                for window in self.driver.window_handles:
+                    self.driver.switch_to.window(window)
+                    if not self.check_order_page_load():
+                        continue
+                    check_result = self.check_order_1()
+                    if check_result:
+                        return
+                    else:
+                        self.driver.refresh()
+
+    def check_select_page_load(self):
         try:
-            WebDriverWait(self.driver, 0.01, 0.01).until(
+            WebDriverWait(self.driver, 0.1, 0.01).until(
                         EC.presence_of_element_located((By.CLASS_NAME, "functional-calendar")))
+        except TimeoutException as e:
+            print("未加载完成")
+            return False
+        else:
+            return True
+
+    def check_order_page_load(self):
+        try:
+            button_xpath = '//*[@id="confirmOrder_1"]/div[%d]/button'
+            if self.real_name:
+                button_replace = 9
+            else:
+                button_replace = 8
+            WebDriverWait(self.driver, 0.1, 0.01).until(
+                EC.presence_of_element_located(
+                    (By.XPATH, button_xpath%button_replace)))
         except TimeoutException as e:
             print("未加载完成")
             return False
@@ -209,7 +253,7 @@ class Concert(object):
         if self.status == 1:
             print("###开始进行日期及票价选择###")
             if self.date != 0: # 如果需要选择日期
-                calendar = WebDriverWait(self.driver, self.total_wait_time, self.refresh_wait_time).until(
+                calendar = WebDriverWait(self.driver, self.total_wait_time, 0.05).until(
                     EC.presence_of_element_located((By.CLASS_NAME, "functional-calendar")))
                 datelist = calendar.find_elements_by_css_selector("[class='wh_content_item']") # 找到能选择的日期
                 datelist = datelist[7:] # 跳过前面7个表示周一~周日的元素
@@ -264,7 +308,7 @@ class Concert(object):
         def add_ticket(): # 设置增加票数
             try:
                 for i in range(self.ticket_num - 1):  
-                    addbtn = WebDriverWait(self.driver, self.total_wait_time, self.refresh_wait_time).until(
+                    addbtn = WebDriverWait(self.driver, self.total_wait_time, 0.01).until(
                         EC.presence_of_element_located((By.XPATH, "//div[@class='cafe-c-input-number']/a[2]")))
                     addbtn.click()
             except:
@@ -404,7 +448,7 @@ class Concert(object):
                 try:
                     list_xpath = "//*[@id=\"confirmOrder_1\"]/div[2]/div[2]/div[1]/div[%d]/label/span[1]/input"
                     for i in range(len(self.real_name)): # 选择第i个实名者
-                        WebDriverWait(self.driver, self.total_wait_time, self.refresh_wait_time).until(
+                        WebDriverWait(self.driver, self.total_wait_time, 0.1).until(
                             EC.presence_of_element_located((By.XPATH, list_xpath%(i+1)))).click()
                 except Exception as e:
                     print(e)
@@ -420,31 +464,28 @@ class Concert(object):
                 raise Exception('***错误：没有找到提交订单按钮***')
             '''
             
-            submitbtn = WebDriverWait(self.driver, self.total_wait_time, self.refresh_wait_time).until(
+            submitbtn = WebDriverWait(self.driver, self.total_wait_time, 0.01).until(
                 EC.presence_of_element_located(
                     (By.XPATH, button_xpath%button_replace))) # 同意以上协议并提交订单 
             submitbtn.click()
             # 同一时间下单人数多
             try:
-                fuck_confirm_btn = WebDriverWait(self.driver, 0.02, 0.01).until(
+                WebDriverWait(self.driver, 0.1, 0.01).until(
                     EC.presence_of_element_located(
                         (By.XPATH, '//*[@id="dialog-footer-2"]/button')))
             except TimeoutException as e:
-                pass
+                try:
+                    WebDriverWait(self.driver, self.total_wait_time, self.refresh_wait_time).until(
+                        EC.title_contains('支付宝'))
+                    self.status = 6
+                    print('###成功提交订单,请手动支付###')
+                    self.time_end = time.time()
+                    return True
+                except Exception as e:
+                    print('---提交订单失败,请查看问题---')
+                    print(e)
+                    return False
             else:
-                fuck_confirm_btn.click()
-                return False
-            
-            try:
-                WebDriverWait(self.driver, self.total_wait_time, self.refresh_wait_time).until(
-                    EC.title_contains('支付宝'))
-                self.status = 6
-                print('###成功提交订单,请手动支付###')
-                self.time_end = time.time()
-                return True
-            except Exception as e:
-                print('---提交订单失败,请查看问题---')
-                print(e)
                 return False
 
                 
