@@ -2,6 +2,7 @@
 from json import loads
 import traceback
 import datetime
+import psutil
 
 from os.path import exists
 from pickle import dump, load
@@ -57,6 +58,14 @@ class Concert(object):
                 return True
         except:
             return False
+
+    def exit_driver(self):
+        # 退出浏览器后，还会留下chromedriver的进程，需要手动删除
+        ppid = self.driver.service.process.pid
+        self.driver.quit()
+        if self.browser == 0:
+            p = psutil.Process(ppid)
+            p.kill()
 
         
     def get_cookie(self):
